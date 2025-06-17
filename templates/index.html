@@ -235,7 +235,7 @@
       }
 
       function connectWebSocket() {
-        ws = new WebSocket('ws://' + window.location.hostname + ':8765');
+        ws = new WebSocket('ws://0.0.0.0:8765');
         ws.onopen = () => { setStatus('WebSocket подключён, ваш ID: ' + myId); logMessage('WebSocket соединение установлено'); };
         ws.onmessage = async (event) => {
           const msg = JSON.parse(event.data);
