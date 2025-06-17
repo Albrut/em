@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>WebRTC Видеозвонок</title>
+  <style>
+    /* Стили из предыдущего примера */
+    * {
+      box-sizing: border-box;
+    }
+    body {
+      margin: 0;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background: #f0f2f5;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-height: 100vh;
+      color: #333;
+      padding: 20px;
+    }
+    h1 {
+      margin-bottom: 10px;
+      color: #222;
+    }
+    .video-container {
+      display: flex;
+      gap: 20px;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+      justify-content: center;
+      width: 100%;
+      max-width: 900px;
+    }
+    video {
+      background-color: #000;
+      border-radius: 12px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+      width: 420px;
+      height: 315px;
+      object-fit: cover;
+    }
+    .controls {
+      display: flex;
+      gap: 15px;
+      flex-wrap: wrap;
+      justify-content: center;
+      margin-bottom: 15px;
+      width: 100%;
+      max-width: 900px;
+    }
+    input[type="text"] {
+      padding: 10px 15px;
+      font-size: 16px;
+      border: 2px solid #ddd;
+      border-radius: 8px;
+      outline-offset: 2px;
+      transition: border-color 0.3s;
+      width: 240px;
+    }
+    input[type="text"]:focus {
+      border-color: #4a90e2;
+    }
+    button {
+      background-color: #4a90e2;
+      border: none;
+      color: white;
+      font-weight: 600;
+      padding: 12px 25px;
+      font-size: 16px;
+      border-radius: 8px;
+      cursor: pointer;
+      box-shadow: 0 3px 8px rgba(74, 144, 226, 0.5);
+      transition: background-color 0.3s, box-shadow 0.3s;
+      user-select: none;
+    }
+    button:hover {
+      background-color: #357abd;
+      box-shadow: 0 5px 15px rgba(53, 122, 189, 0.7);
+    }
+    button:disabled {
+      background-color: #a3b0ce;
+      cursor: not-allowed;
+      box-shadow: none;
+    }
+    #messages {
+      max-width: 900px;
+      width: 100%;
+      height: 180px;
+      overflow-y: auto;
+      background: white;
+      padding: 15px;
+      border-radius: 10px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+      font-size: 14px;
+      line-height: 1.4;
+      color: #444;
+    }
+    #status {
+      margin-top: 12px;
+      font-weight: 600;
+      color: #4a90e2;
+    }
+    @media (max-width: 480px) {
+      video {
+        width: 100%;
+        height: auto;
+      }
+      input[type="text"] {
+        width: 100%;
+      }
+      .controls {
+        flex-direction: column;
+        gap: 10px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <h1>WebRTC Видеозвонок</h1>
+
+  <div class="video-container">
+    <video id="localVideo" autoplay muted playsinline></video>
+    <video id="remoteVideo" autoplay playsinline></video>
+  </div>
+
+  <div class="controls">
+    <input type="text" id="peerIdInput" placeholder="Введите ID собеседника (любой текст)" />
+    <button id="callBtn">Позвонить</button>
+    <button id="hangupBtn" disabled>Завершить звонок</button>
+  </div>
+
+  <div id="messages" aria-live="polite" role="log"></div>
+  <div id="status">Статус: Не подключено</div>
+
+  <script>
+    (function () {
+      const localVideo = document.getElementById('localVideo');
+      const remoteVideo = document.getElementById('remoteVideo');
+      const callBtn = document.getElementById('callBtn');
+      const hangupBtn = document.getElementById('hangupBtn');
+      const peerIdInput = document.getElementById('peerIdInput');
+      const messagesElem = document.getElementById('messages');
+      const statusElem = document.getElementById('status');
+
+      let localStream = null;
+      let pc = null;
+      let ws = null;
+      let peerId = null;
+      let myId = Math.floor(Math.random() * 10000).toString();
+
+      // Конфигурация ICE серверов
+      const configuration = {
+        iceServers: [
+          { urls: "stun:stun.l.google.com:19302" },
+          // можно добавить TURN серверы сюда
+        ]
+      };
+
+      function logMessage(message) {
+        const p = document.createElement('p');
+        p.textContent = message;
+        messagesElem.appendChild(p);
+        messagesElem.scrollTop = messagesElem.scrollHeight;
+      }
+
+      function setStatus(text) {
+        statusElem.textContent = 'Статус: ' + text;
+      }
+
+      async function startLocalStream() {
+        try {
+          localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+          localVideo.srcObject = localStream;
+          logMessage('Локальный поток получен');
+        } catch (e) {
+          alert('Ошибка доступа к камере и микрофону: ' + e.message);
+          setStatus('Ошибка доступа к устройствам');
+          throw e;
+        }
+      }
+
+      function sendMessage(message) {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify(message));
+        }
+      }
+
+      function createPeerConnection(remoteId) {
+        pc = new RTCPeerConnection(configuration);
+
+        // Добавляем локальные треки в PeerConnection
+        localStream.getTracks().forEach(track => {
+          pc.addTrack(track, localStream);
+        });
+
+        pc.onicecandidate = event => {
+          if (event.candidate) {
+            sendMessage({
+              type: 'ice-candidate',
+              from: myId,
+              to: remoteId,
+              candidate: event.candidate
+            });
+          }
+        };
+
+pc.ontrack = event => {
+  remoteVideo.srcObject = event.streams[0];
+  remoteVideo.volume = 1.0;  // гарантируем громкость
+  logMessage('Получен удалённый поток');
+};
+        pc.onconnectionstatechange = () => {
+          switch(pc.connectionState) {
+            case 'connected':
+              setStatus('Соединение установлено');
+              break;
+            case 'disconnected':
+            case 'failed':
+              setStatus('Соединение прервано');
+              endCall();
+              break;
+            case 'closed':
+              setStatus('Соединение закрыто');
+              break;
+          }
+        };
+      }
+
+      async function call() {
+        const calleeId = peerIdInput.value.trim();
+        if (!calleeId) {
+          alert('Введите ID собеседника');
+          return;
+        }
+        if (calleeId === myId) {
+          alert('Нельзя звонить самому себе');
+          return;
+        }
+        peerId = calleeId;
+        createPeerConnection(peerId);
+
+        setStatus('Создаём предложение (offer)...');
+
+        try {
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+
+          sendMessage({
+            type: 'offer',
+            from: myId,
+            to: peerId,
+            sdp: pc.localDescription
+          });
+
+          callBtn.disabled = true;
+          hangupBtn.disabled = false;
+        } catch (err) {
+          alert('Ошибка при создании предложения: ' + err.message);
+          setStatus('Ошибка');
+        }
+      }
+
+      async function handleOffer(message) {
+        peerId = message.from;
+        createPeerConnection(peerId);
+
+        setStatus('Получено предложение (offer), отвечаем...');
+
+        try {
+          await pc.setRemoteDescription(new RTCSessionDescription(message.sdp));
+
+          const answer = await pc.createAnswer();
+          await pc.setLocalDescription(answer);
+
+          sendMessage({
+            type: 'answer',
+            from: myId,
+            to: peerId,
+            sdp: pc.localDescription
+          });
+
+          callBtn.disabled = true;
+          hangupBtn.disabled = false;
+          setStatus('Ответ отправлен');
+        } catch (err) {
+          alert('Ошибка обработки предложения: ' + err.message);
+          setStatus('Ошибка');
+        }
+      }
+
+      async function handleAnswer(message) {
+        setStatus('Получен ответ (answer), устанавливаем...');
+
+        try {
+          await pc.setRemoteDescription(new RTCSessionDescription(message.sdp));
+          setStatus('Соединение установлено');
+        } catch (err) {
+          alert('Ошибка установки ответа: ' + err.message);
+          setStatus('Ошибка');
+        }
+      }
+
+      async function handleIceCandidate(message) {
+        try {
+          await pc.addIceCandidate(new RTCIceCandidate(message.candidate));
+          logMessage('Добавлен ICE кандидат');
+        } catch (err) {
+          console.warn('Ошибка добавления ICE кандидата', err);
+        }
+      }
+
+      function endCall() {
+        if (pc) {
+          pc.close();
+          pc = null;
+        }
+        remoteVideo.srcObject = null;
+        callBtn.disabled = false;
+        hangupBtn.disabled = true;
+        setStatus('Звонок завершён или не установлен');
+        logMessage('Звонок завершён');
+      }
+
+      function connectWebSocket() {
+        ws = new WebSocket('ws://' + window.location.hostname + ':8765');
+
+        ws.onopen = () => {
+          setStatus('WebSocket подключён. Ваш ID: ' + myId);
+          logMessage('WebSocket соединение установлено');
+        };
+
+        ws.onmessage = async (event) => {
+          const message = JSON.parse(event.data);
+          if (message.to !== myId) return; // игнорируем сообщения не для нас
+
+          switch(message.type) {
+            case 'offer':
+              logMessage(`Получено предложение от ${message.from}`);
+              await handleOffer(message);
+              break;
+            case 'answer':
+              logMessage(`Получен ответ от ${message.from}`);
+              await handleAnswer(message);
+              break;
+            case 'ice-candidate':
+              await handleIceCandidate(message);
+              break;
+            default:
+              console.warn('Неизвестный тип сообщения', message.type);
+          }
+        };
+
+        ws.onclose = () => {
+          setStatus('WebSocket отключён');
+          logMessage('WebSocket соединение закрыто');
+        };
+
+        ws.onerror = (err) => {
+          setStatus('Ошибка WebSocket');
+          console.error('WebSocket error:', err);
+        };
+      }
+
+      callBtn.addEventListener('click', call);
+      hangupBtn.addEventListener('click', () => {
+        sendMessage({ type: 'hangup', from: myId, to: peerId });
+        endCall();
+      });
+
+      // Запуск
+      (async () => {
+        await startLocalStream();
+        connectWebSocket();
+      })();
+
+    })();
+  </script>
+</body>
+</html>
